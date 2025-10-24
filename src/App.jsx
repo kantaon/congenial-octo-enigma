@@ -322,6 +322,7 @@ function App() {
   const [doorCategory, setDoorCategory] = useState('lamino')
   const [showMeasurements, setShowMeasurements] = useState(false)
   const [isFrontView, setIsFrontView] = useState(false)
+  const [doorsVisible, setDoorsVisible] = useState(true)
   const [cameraResetKey, setCameraResetKey] = useState(0)
   const [toast, setToast] = useState('')
   const [quoteData, setQuoteData] = useState({
@@ -336,12 +337,22 @@ function App() {
   })
 
   const controlsRef = useRef(null)
+  const previousDoorStyle = useRef(config.doorStyle)
 
   useEffect(() => {
     if (activeInteriorColumn > config.columnCount - 1) {
       setActiveInteriorColumn(Math.max(0, config.columnCount - 1))
     }
   }, [activeInteriorColumn, config.columnCount])
+
+  useEffect(() => {
+    if (config.doorStyle === 'none') {
+      setDoorsVisible(false)
+    } else if (previousDoorStyle.current === 'none') {
+      setDoorsVisible(true)
+    }
+    previousDoorStyle.current = config.doorStyle
+  }, [config.doorStyle])
 
   useEffect(() => {
     if (!toast) return
@@ -471,10 +482,19 @@ function App() {
         case 'measure':
           setShowMeasurements((prev) => !prev)
           break
-        case 'doors':
-          setActiveStep(2)
-          setToast('Přepnuto na konfiguraci dveří.')
+        case 'doors': {
+          if (config.doorStyle === 'none') {
+            setActiveStep(2)
+            setToast('Skříň je otevřená – aktivujte typ dveří ve 3. kroku.')
+            break
+          }
+          setDoorsVisible((prev) => {
+            const next = !prev
+            setToast(next ? 'Dveře zobrazeny.' : 'Dveře skryty, interiér je viditelný.')
+            return next
+          })
           break
+        }
         case 'look':
           setIsFrontView((prev) => !prev)
           setToast('Změněn pohled kamery.')
@@ -503,12 +523,16 @@ function App() {
               const shareData = {
                 title: '3D skříň – návrh',
                 text: 'Podívej se na můj návrh vestavěné skříně.',
+                url: window.location.href,
               }
 
               const blob = new Blob([payload], { type: 'application/json' })
-              const file = new File([blob], 'skrin-konfigurace.json', { type: 'application/json' })
+              let file
+              if (typeof window !== 'undefined' && typeof window.File === 'function') {
+                file = new File([blob], 'skrin-konfigurace.json', { type: 'application/json' })
+              }
 
-              if (navigator.canShare?.({ files: [file] })) {
+              if (file && navigator.canShare?.({ files: [file] })) {
                 shareData.files = [file]
               } else {
                 shareData.text = `${shareData.text}\n\n${payload}`
@@ -523,7 +547,9 @@ function App() {
               const element = document.createElement('a')
               element.href = URL.createObjectURL(new Blob([payload], { type: 'application/json' }))
               element.download = 'skrin-konfigurace.json'
+              document.body.appendChild(element)
               element.click()
+              document.body.removeChild(element)
               URL.revokeObjectURL(element.href)
               setToast('Stažen soubor s konfigurací.')
             }
@@ -677,6 +703,8 @@ function App() {
                     interiorFinish={interiorColor}
                     doorFinish={doorColor}
                     doorStyle={doorVariant}
+                    doorsVisible={doorsVisible}
+                    activeColumn={activeInteriorColumn}
                     includeBackPanel={config.includeBackPanel}
                     includeTopBottom={config.includeTopBottom}
                     includeTopShelf={config.includeTopShelf}
@@ -713,6 +741,7 @@ function App() {
               activeFlags={{
                 measure: showMeasurements,
                 look: isFrontView,
+                doors: !doorsVisible && config.doorStyle !== 'none',
               }}
               disabledFlags={{
                 undo: !canUndo,
@@ -1640,6 +1669,8 @@ function Cabinet({
   interiorFinish,
   doorFinish,
   doorStyle,
+  doorsVisible,
+  activeColumn,
   includeBackPanel,
   includeTopBottom,
   includeTopShelf,
@@ -1716,6 +1747,16 @@ function Cabinet({
         </mesh>
       )}
 
+      {Array.from({ length: Math.max(columnCount - 1, 0) }).map((_, index) => {
+        const dividerX = -interiorWidth / 2 + columnWidth * (index + 1)
+        return (
+          <mesh key={`divider-${index}`} position={[dividerX, 0, 0]} receiveShadow>
+            <boxGeometry args={[thickness * 0.85, interiorHeight, Math.max(interiorDepth - 0.02, 0.08)]} />
+            <meshStandardMaterial color={interiorFinish} roughness={0.38} metalness={0.12} />
+          </mesh>
+        )
+      })}
+
       {columnModules.map((moduleDef, index) => (
         <ModuleColumn
           key={`${moduleDef.id}-${index}`}
@@ -1723,17 +1764,18 @@ function Cabinet({
           columnIndex={index}
           columnCount={columnCount}
           columnWidth={columnWidth}
-          cabinetWidth={widthMeters}
+          interiorWidth={interiorWidth}
           thickness={thickness}
           depth={Math.max(interiorDepth - 0.02, 0.08)}
           interiorHeight={interiorHeight}
           interiorBottom={interiorBottom}
-          finish={cabinetFinish}
+          finish={interiorFinish}
           interiorFinish={interiorFinish}
+          isActive={index === activeColumn}
         />
       ))}
 
-      {doorStyle !== 'none' && (
+      {doorStyle !== 'none' && doorsVisible && (
         <CabinetDoors
           width={widthMeters}
           height={heightMeters}
@@ -1756,6 +1798,8 @@ Cabinet.propTypes = {
   interiorFinish: PropTypes.string.isRequired,
   doorFinish: PropTypes.string.isRequired,
   doorStyle: PropTypes.oneOf(['hinged', 'sliding', 'none']).isRequired,
+  doorsVisible: PropTypes.bool.isRequired,
+  activeColumn: PropTypes.number.isRequired,
   includeBackPanel: PropTypes.bool.isRequired,
   includeTopBottom: PropTypes.bool.isRequired,
   includeTopShelf: PropTypes.bool.isRequired,
@@ -1768,29 +1812,36 @@ function ModuleColumn({
   columnIndex,
   columnCount,
   columnWidth,
-  cabinetWidth,
+  interiorWidth,
   thickness,
   depth,
   interiorHeight,
   interiorBottom,
   finish,
   interiorFinish,
+  isActive,
 }) {
   const groupRef = useRef(null)
   const scaleRef = useRef(1)
+  const scaleGoal = useRef(1)
 
   useEffect(() => {
     scaleRef.current = 0.82
   }, [module.id, columnCount])
 
+  useEffect(() => {
+    scaleGoal.current = isActive ? 1.05 : 1
+  }, [isActive])
+
   useFrame(() => {
     if (!groupRef.current) return
-    const next = scaleRef.current + (1 - scaleRef.current) * 0.15
+    const target = scaleGoal.current
+    const next = scaleRef.current + (target - scaleRef.current) * 0.18
     scaleRef.current = next
     groupRef.current.scale.set(next, 1, next)
   })
 
-  const xOffset = -cabinetWidth / 2 + columnWidth / 2 + columnIndex * columnWidth
+  const xOffset = -interiorWidth / 2 + columnWidth / 2 + columnIndex * columnWidth
   const usableWidth = Math.max(columnWidth - thickness * 1.2, 0.08)
   const usableDepth = depth
 
@@ -1834,6 +1885,15 @@ function ModuleColumn({
 
   return (
     <group ref={groupRef} position={[xOffset, 0, 0]}>
+      {isActive && (
+        <mesh
+          position={[0, bottomY + effectiveHeight / 2, -usableDepth / 2 - 0.005]}
+          receiveShadow
+        >
+          <planeGeometry args={[usableWidth * 0.98, effectiveHeight * 1.02]} />
+          <meshStandardMaterial color={accentColor} transparent opacity={0.1} />
+        </mesh>
+      )}
       {module.accent && (
         <mesh position={[0, bottomY + effectiveHeight / 2, usableDepth / 2 + 0.01]}>
           <planeGeometry args={[usableWidth * 0.92, effectiveHeight * 0.95]} />
@@ -1936,13 +1996,14 @@ ModuleColumn.propTypes = {
   columnIndex: PropTypes.number.isRequired,
   columnCount: PropTypes.number.isRequired,
   columnWidth: PropTypes.number.isRequired,
-  cabinetWidth: PropTypes.number.isRequired,
+  interiorWidth: PropTypes.number.isRequired,
   thickness: PropTypes.number.isRequired,
   depth: PropTypes.number.isRequired,
   interiorHeight: PropTypes.number.isRequired,
   interiorBottom: PropTypes.number.isRequired,
   finish: PropTypes.string.isRequired,
   interiorFinish: PropTypes.string.isRequired,
+  isActive: PropTypes.bool.isRequired,
 }
 
 function CabinetDoors({ width, height, depth, doorStyle, finish }) {
@@ -1954,21 +2015,31 @@ function CabinetDoors({ width, height, depth, doorStyle, finish }) {
 
   if (doorStyle === 'sliding') {
     const overlap = 0.03
+    const trackThickness = doorThickness / 2
+    const frameColor = '#c7c9d4'
     return (
       <group>
-        <mesh position={[0, height / 2 + doorThickness / 1.5, doorZ + 0.01]} castShadow receiveShadow>
-          <boxGeometry args={[width + doorThickness * 1.5, doorThickness / 2, doorThickness]} />
-          <meshStandardMaterial color="#b5b7bd" metalness={0.6} roughness={0.25} />
+        <mesh position={[0, height / 2 + trackThickness, doorZ + 0.01]} castShadow receiveShadow>
+          <boxGeometry args={[width + doorThickness * 1.6, trackThickness, doorThickness * 1.1]} />
+          <meshStandardMaterial color={frameColor} metalness={0.65} roughness={0.25} />
         </mesh>
-        <mesh position={[0, height / -2 + doorThickness / 1.5, doorZ + 0.01]} receiveShadow>
-          <boxGeometry args={[width + doorThickness * 1.5, doorThickness / 2, doorThickness]} />
-          <meshStandardMaterial color="#b5b7bd" metalness={0.45} roughness={0.35} />
+        <mesh position={[0, height / -2 - trackThickness / 1.5, doorZ + 0.01]} receiveShadow>
+          <boxGeometry args={[width + doorThickness * 1.6, trackThickness, doorThickness * 1.1]} />
+          <meshStandardMaterial color={frameColor} metalness={0.5} roughness={0.35} />
+        </mesh>
+        <mesh position={[-width / 2 - doorThickness / 3, 0, doorZ + 0.01]} receiveShadow>
+          <boxGeometry args={[doorThickness / 1.2, height + trackThickness * 1.2, doorThickness * 0.9]} />
+          <meshStandardMaterial color={frameColor} metalness={0.55} roughness={0.4} />
+        </mesh>
+        <mesh position={[width / 2 + doorThickness / 3, 0, doorZ + 0.01]} receiveShadow>
+          <boxGeometry args={[doorThickness / 1.2, height + trackThickness * 1.2, doorThickness * 0.9]} />
+          <meshStandardMaterial color={frameColor} metalness={0.55} roughness={0.4} />
         </mesh>
         <Door
           width={width / 2 + overlap}
           height={height}
           doorThickness={doorThickness}
-          position={[-overlap / 2, 0, doorZ]}
+          position={[-overlap / 2, 0, doorZ + doorThickness * 0.35]}
           hingeSide="left"
           finish={finish}
           handleOffset={handleOffset}
@@ -1979,7 +2050,7 @@ function CabinetDoors({ width, height, depth, doorStyle, finish }) {
           width={width / 2 + overlap}
           height={height}
           doorThickness={doorThickness}
-          position={[overlap / 2, 0, doorZ + doorThickness * 0.6]}
+          position={[overlap / 2, 0, doorZ - doorThickness * 0.35]}
           hingeSide="right"
           finish={finish}
           handleOffset={handleOffset}
@@ -2029,6 +2100,7 @@ CabinetDoors.propTypes = {
 
 function Door({ width, height, doorThickness, position, hingeSide, finish, handleOffset, handleLength, variant }) {
   const isSliding = variant?.startsWith('sliding')
+  const frameColor = '#c8cbd4'
   const handleX = isSliding
     ? hingeSide === 'left'
       ? width / 2 - 0.12
@@ -2040,8 +2112,36 @@ function Door({ width, height, doorThickness, position, hingeSide, finish, handl
     <group position={position}>
       <mesh castShadow receiveShadow>
         <boxGeometry args={[width, height, doorThickness]} />
-        <meshStandardMaterial color={finish} roughness={0.42} metalness={0.1} />
+        <meshStandardMaterial
+          color={isSliding ? frameColor : finish}
+          roughness={isSliding ? 0.3 : 0.42}
+          metalness={isSliding ? 0.35 : 0.1}
+        />
       </mesh>
+      {isSliding && (
+        <>
+          <mesh position={[0, 0, doorThickness / 2 - doorThickness * 0.25]} receiveShadow>
+            <boxGeometry args={[width * 0.92, height * 0.88, Math.max(doorThickness * 0.18, 0.005)]} />
+            <meshStandardMaterial color={finish} roughness={0.4} metalness={0.12} />
+          </mesh>
+          <mesh position={[0, height / 2 - 0.04, doorThickness / 2 + 0.004]}>
+            <boxGeometry args={[width * 0.94, 0.02, doorThickness * 0.6]} />
+            <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.3} />
+          </mesh>
+          <mesh position={[0, -height / 2 + 0.04, doorThickness / 2 + 0.004]}>
+            <boxGeometry args={[width * 0.94, 0.02, doorThickness * 0.6]} />
+            <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.3} />
+          </mesh>
+          <mesh position={[width / 2 - 0.02, 0, doorThickness / 2 + 0.004]}>
+            <boxGeometry args={[0.02, height * 0.94, doorThickness * 0.6]} />
+            <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.3} />
+          </mesh>
+          <mesh position={[-width / 2 + 0.02, 0, doorThickness / 2 + 0.004]}>
+            <boxGeometry args={[0.02, height * 0.94, doorThickness * 0.6]} />
+            <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.3} />
+          </mesh>
+        </>
+      )}
       <mesh position={[handleX, 0, doorThickness / 2 + 0.01]} castShadow>
         <boxGeometry args={[isSliding ? 0.045 : 0.015, handleLength, isSliding ? 0.015 : 0.02]} />
         <meshStandardMaterial color={accentColor} metalness={0.6} roughness={isSliding ? 0.3 : 0.2} />
