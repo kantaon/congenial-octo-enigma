@@ -422,6 +422,7 @@ function App() {
           modules: nextModules,
         }
       })
+      setActiveInteriorColumn((prev) => Math.min(prev, nextCount - 1))
     },
     [updateConfig],
   )
@@ -499,16 +500,32 @@ function App() {
           const payload = JSON.stringify(config, null, 2)
           try {
             if (navigator.share) {
-              await navigator.share({
-                title: '3D skříň – konfigurace',
+              const shareData = {
+                title: '3D skříň – návrh',
                 text: 'Podívej se na můj návrh vestavěné skříně.',
-                url: `data:text/json;base64,${window.btoa(unescape(encodeURIComponent(payload)))}`,
-              })
+              }
+
+              const blob = new Blob([payload], { type: 'application/json' })
+              const file = new File([blob], 'skrin-konfigurace.json', { type: 'application/json' })
+
+              if (navigator.canShare?.({ files: [file] })) {
+                shareData.files = [file]
+              } else {
+                shareData.text = `${shareData.text}\n\n${payload}`
+              }
+
+              await navigator.share(shareData)
+              setToast('Sdílení dokončeno.')
             } else if (navigator.clipboard?.writeText) {
               await navigator.clipboard.writeText(payload)
               setToast('Konfigurace zkopírována do schránky.')
             } else {
-              setToast('Sdílení není podporované v tomto prohlížeči.')
+              const element = document.createElement('a')
+              element.href = URL.createObjectURL(new Blob([payload], { type: 'application/json' }))
+              element.download = 'skrin-konfigurace.json'
+              element.click()
+              URL.revokeObjectURL(element.href)
+              setToast('Stažen soubor s konfigurací.')
             }
           } catch (error) {
             setToast('Sdílení se nezdařilo.')
@@ -1682,7 +1699,14 @@ function Cabinet({
 
       <mesh position={[0, 0, 0]} receiveShadow>
         <boxGeometry args={[interiorWidth, interiorHeight, interiorDepth]} />
-        <meshStandardMaterial color={interiorFinish} roughness={0.36} metalness={0.12} />
+        <meshStandardMaterial
+          color={interiorFinish}
+          roughness={0.36}
+          metalness={0.12}
+          side={THREE.BackSide}
+          transparent
+          opacity={0.98}
+        />
       </mesh>
 
       {includeTopShelf && (
@@ -1813,7 +1837,7 @@ function ModuleColumn({
       {module.accent && (
         <mesh position={[0, bottomY + effectiveHeight / 2, usableDepth / 2 + 0.01]}>
           <planeGeometry args={[usableWidth * 0.92, effectiveHeight * 0.95]} />
-          <meshStandardMaterial color={accentColor} roughness={0.4} metalness={0.2} opacity={0.08} transparent />
+          <meshStandardMaterial color={accentColor} roughness={0.35} metalness={0.25} opacity={0.12} transparent />
         </mesh>
       )}
 
@@ -1936,6 +1960,10 @@ function CabinetDoors({ width, height, depth, doorStyle, finish }) {
           <boxGeometry args={[width + doorThickness * 1.5, doorThickness / 2, doorThickness]} />
           <meshStandardMaterial color="#b5b7bd" metalness={0.6} roughness={0.25} />
         </mesh>
+        <mesh position={[0, height / -2 + doorThickness / 1.5, doorZ + 0.01]} receiveShadow>
+          <boxGeometry args={[width + doorThickness * 1.5, doorThickness / 2, doorThickness]} />
+          <meshStandardMaterial color="#b5b7bd" metalness={0.45} roughness={0.35} />
+        </mesh>
         <Door
           width={width / 2 + overlap}
           height={height}
@@ -2000,7 +2028,14 @@ CabinetDoors.propTypes = {
 }
 
 function Door({ width, height, doorThickness, position, hingeSide, finish, handleOffset, handleLength, variant }) {
-  const handleX = hingeSide === 'left' ? width / 2 - 0.08 : -width / 2 + 0.08
+  const isSliding = variant?.startsWith('sliding')
+  const handleX = isSliding
+    ? hingeSide === 'left'
+      ? width / 2 - 0.12
+      : -width / 2 + 0.12
+    : hingeSide === 'left'
+    ? width / 2 - 0.08
+    : -width / 2 + 0.08
   return (
     <group position={position}>
       <mesh castShadow receiveShadow>
@@ -2008,13 +2043,15 @@ function Door({ width, height, doorThickness, position, hingeSide, finish, handl
         <meshStandardMaterial color={finish} roughness={0.42} metalness={0.1} />
       </mesh>
       <mesh position={[handleX, 0, doorThickness / 2 + 0.01]} castShadow>
-        <boxGeometry args={[0.015, handleLength, 0.02]} />
-        <meshStandardMaterial color={accentColor} metalness={0.6} roughness={0.2} />
+        <boxGeometry args={[isSliding ? 0.045 : 0.015, handleLength, isSliding ? 0.015 : 0.02]} />
+        <meshStandardMaterial color={accentColor} metalness={0.6} roughness={isSliding ? 0.3 : 0.2} />
       </mesh>
-      <mesh position={[handleX, handleOffset, doorThickness / 2 + 0.015]}>
-        <cylinderGeometry args={[0.0095, 0.0095, 0.04, 18]} />
-        <meshStandardMaterial color="#1f1f1f" metalness={0.65} roughness={0.25} />
-      </mesh>
+      {!isSliding && (
+        <mesh position={[handleX, handleOffset, doorThickness / 2 + 0.015]}>
+          <cylinderGeometry args={[0.0095, 0.0095, 0.04, 18]} />
+          <meshStandardMaterial color="#1f1f1f" metalness={0.65} roughness={0.25} />
+        </mesh>
+      )}
       {variant?.startsWith('sliding') && (
         <mesh position={[hingeSide === 'left' ? width / 2 - 0.02 : -width / 2 + 0.02, 0, 0]}>
           <boxGeometry args={[0.01, height * 0.9, doorThickness * 1.1]} />
@@ -2110,19 +2147,22 @@ function CameraRig({ controlsRef, isFrontView, resetKey }) {
   const right = useRef(new THREE.Vector3())
   const movement = useRef(new THREE.Vector3())
   const up = useMemo(() => new THREE.Vector3(0, 1, 0), [])
-  const targetRef = useRef(new THREE.Vector3(0, 1.1, 0))
-  const desiredPosition = useRef(new THREE.Vector3(3.3, 2.3, 6.3))
 
   useEffect(() => {
-    const defaultPosition = isFrontView ? new THREE.Vector3(0, 2.1, 6.4) : new THREE.Vector3(3.3, 2.3, 6.3)
-    desiredPosition.current.copy(defaultPosition)
-    targetRef.current.set(0, 1.1, 0)
-  }, [isFrontView])
+    if (!controlsRef.current) return
+    const target = new THREE.Vector3(0, 1.1, 0)
+    const position = isFrontView ? new THREE.Vector3(0, 2.1, 6.2) : new THREE.Vector3(3.3, 2.3, 6.3)
+    camera.position.copy(position)
+    controlsRef.current.target.copy(target)
+    controlsRef.current.update()
+  }, [isFrontView, controlsRef, camera])
 
   useEffect(() => {
-    desiredPosition.current.set(3.3, 2.3, 6.3)
-    targetRef.current.set(0, 1.1, 0)
-  }, [resetKey])
+    if (!controlsRef.current) return
+    camera.position.set(3.3, 2.3, 6.3)
+    controlsRef.current.target.set(0, 1.1, 0)
+    controlsRef.current.update()
+  }, [resetKey, controlsRef, camera])
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -2146,14 +2186,6 @@ function CameraRig({ controlsRef, isFrontView, resetKey }) {
       window.removeEventListener('keyup', handleKeyUp)
     }
   }, [])
-
-  useEffect(() => {
-    camera.position.copy(desiredPosition.current)
-    if (controlsRef.current) {
-      controlsRef.current.target.copy(targetRef.current)
-      controlsRef.current.update()
-    }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useFrame((_, delta) => {
     if (!controlsRef.current) return
@@ -2183,9 +2215,6 @@ function CameraRig({ controlsRef, isFrontView, resetKey }) {
       camera.position.add(movement.current)
       controlsRef.current.target.add(movement.current)
     }
-
-    camera.position.lerp(desiredPosition.current, 1 - Math.pow(0.001, delta))
-    controlsRef.current.target.lerp(targetRef.current, 1 - Math.pow(0.001, delta))
     controlsRef.current.update()
   })
 
