@@ -312,6 +312,11 @@ const initialConfig = {
 }
 
 const accentColor = '#d9212a'
+const ROOM_WIDTH_METERS = 3.2
+const ROOM_DEPTH_METERS = 2.8
+const ROOM_BACK_Z = -ROOM_DEPTH_METERS / 2
+const WALL_GAP = 0.001
+const BACK_GAP = 0.012
 
 function App() {
   const [config, setConfig, undo, redo, canUndo, canRedo] = useHistoryState(initialConfig)
@@ -338,6 +343,7 @@ function App() {
 
   const controlsRef = useRef(null)
   const previousDoorStyle = useRef(config.doorStyle)
+  const interiorDoorVisibility = useRef(null)
 
   useEffect(() => {
     if (activeInteriorColumn > config.columnCount - 1) {
@@ -348,11 +354,29 @@ function App() {
   useEffect(() => {
     if (config.doorStyle === 'none') {
       setDoorsVisible(false)
+      interiorDoorVisibility.current = null
     } else if (previousDoorStyle.current === 'none') {
       setDoorsVisible(true)
     }
     previousDoorStyle.current = config.doorStyle
   }, [config.doorStyle])
+
+  useEffect(() => {
+    if (config.doorStyle === 'none') return
+    if (activeStep === 1) {
+      if (interiorDoorVisibility.current === null) {
+        interiorDoorVisibility.current = doorsVisible
+      }
+      if (doorsVisible) {
+        setDoorsVisible(false)
+      }
+    } else if (interiorDoorVisibility.current !== null) {
+      if (doorsVisible !== interiorDoorVisibility.current) {
+        setDoorsVisible(interiorDoorVisibility.current)
+      }
+      interiorDoorVisibility.current = null
+    }
+  }, [activeStep, config.doorStyle, doorsVisible])
 
   useEffect(() => {
     if (!toast) return
@@ -393,8 +417,15 @@ function App() {
 
   const handlePositionChange = useCallback(
     (value) => {
-      updateConfig((prev) => ({ ...prev, position: value }))
-      setToast('Pozice skříně upravena.')
+      updateConfig((prev) => {
+        let next = { ...prev, position: value }
+        if (value === 'wall') {
+          const targetWidth = Math.min(ROOM_WIDTH_METERS * 100, 320)
+          next = { ...next, width: targetWidth }
+        }
+        return next
+      })
+      setToast(value === 'wall' ? 'Skříň natažena přes celou stěnu.' : 'Pozice skříně upravena.')
     },
     [updateConfig],
   )
@@ -517,45 +548,38 @@ function App() {
           }
           break
         case 'share': {
+          if (!navigator.share) {
+            setToast('Sdílení není v tomto prohlížeči podporováno.')
+            break
+          }
+
           const payload = JSON.stringify(config, null, 2)
+          const shareData = {
+            title: '3D skříň – návrh',
+            text: 'Podívej se na můj návrh vestavěné skříně.',
+            url: window.location.href,
+          }
+
+          const blob = new Blob([payload], { type: 'application/json' })
+          let file
+          if (typeof window !== 'undefined' && typeof window.File === 'function') {
+            file = new File([blob], 'skrin-konfigurace.json', { type: 'application/json' })
+          }
+
+          if (file && navigator.canShare?.({ files: [file] })) {
+            shareData.files = [file]
+          }
+
           try {
-            if (navigator.share) {
-              const shareData = {
-                title: '3D skříň – návrh',
-                text: 'Podívej se na můj návrh vestavěné skříně.',
-                url: window.location.href,
-              }
-
-              const blob = new Blob([payload], { type: 'application/json' })
-              let file
-              if (typeof window !== 'undefined' && typeof window.File === 'function') {
-                file = new File([blob], 'skrin-konfigurace.json', { type: 'application/json' })
-              }
-
-              if (file && navigator.canShare?.({ files: [file] })) {
-                shareData.files = [file]
-              } else {
-                shareData.text = `${shareData.text}\n\n${payload}`
-              }
-
-              await navigator.share(shareData)
-              setToast('Sdílení dokončeno.')
-            } else if (navigator.clipboard?.writeText) {
-              await navigator.clipboard.writeText(payload)
-              setToast('Konfigurace zkopírována do schránky.')
-            } else {
-              const element = document.createElement('a')
-              element.href = URL.createObjectURL(new Blob([payload], { type: 'application/json' }))
-              element.download = 'skrin-konfigurace.json'
-              document.body.appendChild(element)
-              element.click()
-              document.body.removeChild(element)
-              URL.revokeObjectURL(element.href)
-              setToast('Stažen soubor s konfigurací.')
-            }
+            await navigator.share(shareData)
+            setToast('Sdílení dokončeno.')
           } catch (error) {
-            setToast('Sdílení se nezdařilo.')
-            console.error(error)
+            if (error?.name === 'AbortError') {
+              setToast('Sdílení zrušeno.')
+            } else {
+              console.error(error)
+              setToast('Sdílení se nezdařilo.')
+            }
           }
           break
         }
@@ -693,28 +717,37 @@ function App() {
                 <Environment preset="apartment" background={false} />
                 <SceneLighting />
                 <group position={[0, 0, 0]}>
-                  <Cabinet
+                  <PlacementEnvironment
                     width={config.width}
-                    height={config.height}
                     depth={config.depth}
-                    columnCount={config.columnCount}
-                    modules={config.modules}
+                    height={config.height}
+                    position={config.position}
+                    fullHeight={config.fullHeight}
                     cabinetFinish={cabinetColor}
-                    interiorFinish={interiorColor}
-                    doorFinish={doorColor}
-                    doorStyle={doorVariant}
-                    doorsVisible={doorsVisible}
-                    activeColumn={activeInteriorColumn}
-                    includeBackPanel={config.includeBackPanel}
-                    includeTopBottom={config.includeTopBottom}
-                    includeTopShelf={config.includeTopShelf}
-                    includeBase={config.includeBase}
-                    moduleMap={moduleMap}
-                  />
+                  >
+                    <Cabinet
+                      width={config.width}
+                      height={config.height}
+                      depth={config.depth}
+                      columnCount={config.columnCount}
+                      modules={config.modules}
+                      cabinetFinish={cabinetColor}
+                      interiorFinish={interiorColor}
+                      doorFinish={doorColor}
+                      doorStyle={doorVariant}
+                      doorsVisible={doorsVisible}
+                      activeColumn={activeInteriorColumn}
+                      includeBackPanel={config.includeBackPanel}
+                      includeTopBottom={config.includeTopBottom}
+                      includeTopShelf={config.includeTopShelf}
+                      includeBase={config.includeBase}
+                      moduleMap={moduleMap}
+                    />
+                    {showMeasurements && (
+                      <MeasurementGuide width={config.width} height={config.height} depth={config.depth} />
+                    )}
+                  </PlacementEnvironment>
                 </group>
-                {showMeasurements && (
-                  <MeasurementGuide width={config.width} height={config.height} depth={config.depth} />
-                )}
                 <Showroom />
                 <ContactShadows position={[0, 0.01, 0]} scale={8} blur={2.5} opacity={0.32} far={6} />
                 <OrbitControls
@@ -1689,6 +1722,7 @@ function Cabinet({
   const interiorDepth = depthMeters - thickness * 1.2
   const interiorHeight = heightMeters - thickness * 2
   const interiorBottom = -halfHeight + thickness * 1.1
+  const interiorTop = interiorBottom + interiorHeight
 
   const columnWidth = interiorWidth / columnCount
 
@@ -1696,14 +1730,27 @@ function Cabinet({
 
   return (
     <group position={[0, halfHeight, 0]}>
-      <mesh position={[0, halfHeight - halfHeight, 0]} castShadow receiveShadow>
-        <boxGeometry args={[widthMeters, heightMeters, depthMeters]} />
+      {/* Side carcass panels */}
+      <mesh
+        position={[-(widthMeters / 2 - thickness / 2), 0, 0]}
+        castShadow
+        receiveShadow
+      >
+        <boxGeometry args={[thickness, heightMeters, depthMeters]} />
+        <meshStandardMaterial color={cabinetFinish} roughness={0.52} metalness={0.08} />
+      </mesh>
+      <mesh
+        position={[widthMeters / 2 - thickness / 2, 0, 0]}
+        castShadow
+        receiveShadow
+      >
+        <boxGeometry args={[thickness, heightMeters, depthMeters]} />
         <meshStandardMaterial color={cabinetFinish} roughness={0.52} metalness={0.08} />
       </mesh>
 
       {includeBackPanel && (
         <mesh position={[0, 0, -halfDepth + thickness / 2]} receiveShadow>
-          <boxGeometry args={[widthMeters - thickness * 1.5, heightMeters - thickness * 1.8, thickness]} />
+          <boxGeometry args={[interiorWidth, interiorHeight, thickness]} />
           <meshStandardMaterial color={interiorFinish} roughness={0.32} metalness={0.08} />
         </mesh>
       )}
@@ -1711,11 +1758,11 @@ function Cabinet({
       {includeTopBottom && (
         <>
           <mesh position={[0, halfHeight - thickness / 2, 0]} castShadow receiveShadow>
-            <boxGeometry args={[widthMeters, thickness, depthMeters]} />
+            <boxGeometry args={[interiorWidth, thickness, depthMeters]} />
             <meshStandardMaterial color={cabinetFinish} roughness={0.48} metalness={0.08} />
           </mesh>
           <mesh position={[0, -halfHeight + thickness / 2, 0]} castShadow receiveShadow>
-            <boxGeometry args={[widthMeters, thickness, depthMeters]} />
+            <boxGeometry args={[interiorWidth, thickness, depthMeters]} />
             <meshStandardMaterial color={cabinetFinish} roughness={0.6} metalness={0.08} />
           </mesh>
         </>
@@ -1728,17 +1775,28 @@ function Cabinet({
         </mesh>
       )}
 
-      <mesh position={[0, 0, 0]} receiveShadow>
-        <boxGeometry args={[interiorWidth, interiorHeight, interiorDepth]} />
-        <meshStandardMaterial
-          color={interiorFinish}
-          roughness={0.36}
-          metalness={0.12}
-          side={THREE.BackSide}
-          transparent
-          opacity={0.98}
-        />
-      </mesh>
+      <group>
+        <mesh position={[-interiorWidth / 2 - 0.0005, 0, 0]} rotation={[0, Math.PI / 2, 0]} receiveShadow>
+          <planeGeometry args={[interiorDepth, interiorHeight]} />
+          <meshStandardMaterial color={interiorFinish} roughness={0.34} metalness={0.1} />
+        </mesh>
+        <mesh position={[interiorWidth / 2 + 0.0005, 0, 0]} rotation={[0, -Math.PI / 2, 0]} receiveShadow>
+          <planeGeometry args={[interiorDepth, interiorHeight]} />
+          <meshStandardMaterial color={interiorFinish} roughness={0.34} metalness={0.1} />
+        </mesh>
+        {includeTopBottom && (
+          <>
+            <mesh position={[0, interiorTop - thickness / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+              <planeGeometry args={[interiorWidth, interiorDepth]} />
+              <meshStandardMaterial color={interiorFinish} roughness={0.32} metalness={0.1} />
+            </mesh>
+            <mesh position={[0, interiorBottom + thickness / 2, 0]} rotation={[Math.PI / 2, 0, 0]} receiveShadow>
+              <planeGeometry args={[interiorWidth, interiorDepth]} />
+              <meshStandardMaterial color={interiorFinish} roughness={0.38} metalness={0.12} />
+            </mesh>
+          </>
+        )}
+      </group>
 
       {includeTopShelf && (
         <mesh position={[0, halfHeight - thickness * 2.2, 0]} castShadow receiveShadow>
@@ -1762,7 +1820,6 @@ function Cabinet({
           key={`${moduleDef.id}-${index}`}
           module={moduleDef}
           columnIndex={index}
-          columnCount={columnCount}
           columnWidth={columnWidth}
           interiorWidth={interiorWidth}
           thickness={thickness}
@@ -1807,10 +1864,67 @@ Cabinet.propTypes = {
   moduleMap: PropTypes.object.isRequired,
 }
 
+function PlacementEnvironment({ width, depth, height, position, fullHeight, cabinetFinish, children }) {
+  const widthMeters = width / 100
+  const depthMeters = depth / 100
+  const heightMeters = height / 100
+
+  const roomHalfWidth = ROOM_WIDTH_METERS / 2
+  const roomCenterX = 0
+
+  let cabinetX = roomCenterX
+  switch (position) {
+    case 'left':
+      cabinetX = -roomHalfWidth + widthMeters / 2 + WALL_GAP
+      break
+    case 'right':
+      cabinetX = roomHalfWidth - widthMeters / 2 - WALL_GAP
+      break
+    case 'wall':
+      cabinetX = roomCenterX
+      break
+    default:
+      cabinetX = roomCenterX
+      break
+  }
+
+  const fullWidthSpan = widthMeters >= ROOM_WIDTH_METERS - WALL_GAP * 2
+  if (!fullWidthSpan) {
+    const minAllowedX = -roomHalfWidth + widthMeters / 2 + WALL_GAP
+    const maxAllowedX = roomHalfWidth - widthMeters / 2 - WALL_GAP
+    cabinetX = Math.min(Math.max(cabinetX, minAllowedX), maxAllowedX)
+  } else {
+    cabinetX = roomCenterX
+  }
+
+  const cabinetZ = ROOM_BACK_Z + depthMeters / 2 + BACK_GAP
+
+  return (
+    <group position={[cabinetX, 0, cabinetZ]}>
+      {fullHeight && (
+        <mesh position={[0, heightMeters + 0.0075, 0]} castShadow receiveShadow>
+          <boxGeometry args={[widthMeters - 0.04, 0.015, depthMeters - 0.04]} />
+          <meshStandardMaterial color={cabinetFinish} roughness={0.5} metalness={0.08} />
+        </mesh>
+      )}
+      {children}
+    </group>
+  )
+}
+
+PlacementEnvironment.propTypes = {
+  width: PropTypes.number.isRequired,
+  depth: PropTypes.number.isRequired,
+  height: PropTypes.number.isRequired,
+  position: PropTypes.oneOf(['free', 'left', 'right', 'wall']).isRequired,
+  fullHeight: PropTypes.bool.isRequired,
+  cabinetFinish: PropTypes.string.isRequired,
+  children: PropTypes.node.isRequired,
+}
+
 function ModuleColumn({
   module,
   columnIndex,
-  columnCount,
   columnWidth,
   interiorWidth,
   thickness,
@@ -1821,29 +1935,29 @@ function ModuleColumn({
   interiorFinish,
   isActive,
 }) {
-  const groupRef = useRef(null)
-  const scaleRef = useRef(1)
-  const scaleGoal = useRef(1)
-
-  useEffect(() => {
-    scaleRef.current = 0.82
-  }, [module.id, columnCount])
-
-  useEffect(() => {
-    scaleGoal.current = isActive ? 1.05 : 1
-  }, [isActive])
-
-  useFrame(() => {
-    if (!groupRef.current) return
-    const target = scaleGoal.current
-    const next = scaleRef.current + (target - scaleRef.current) * 0.18
-    scaleRef.current = next
-    groupRef.current.scale.set(next, 1, next)
-  })
-
   const xOffset = -interiorWidth / 2 + columnWidth / 2 + columnIndex * columnWidth
-  const usableWidth = Math.max(columnWidth - thickness * 1.2, 0.08)
+  const usableWidth = Math.max(columnWidth - thickness * 0.4, thickness * 3)
   const usableDepth = depth
+  const panelThickness = thickness * 0.9
+  const faceFrameDepth = Math.min(0.045, usableDepth * 0.18)
+  const backZ = -usableDepth / 2
+  const frontZ = usableDepth / 2
+  const frontInset = Math.max(faceFrameDepth * 0.6, 0.012)
+  const frontLimit = frontZ - frontInset
+  const availableDepth = Math.max(frontLimit - backZ, thickness * 4)
+  const shelfDepth = availableDepth
+  const shelfZ = backZ + shelfDepth / 2
+  const shelfLipDepth = Math.max(Math.min(frontInset * 0.75, 0.028), thickness * 0.35)
+  const shelfLipZ = frontLimit + shelfLipDepth / -2
+  const railFrontOffset = frontLimit - Math.max(frontInset * 0.2, 0.008)
+  const drawerBodyDepth = Math.max(availableDepth - frontInset * 0.6, thickness * 4)
+  const drawerBodyZ = backZ + drawerBodyDepth / 2
+  const drawerFrontThickness = Math.max(frontInset * 0.9, thickness * 0.75)
+  const drawerFrontZ = frontLimit - drawerFrontThickness / 2
+  const handleZ = Math.min(frontZ - 0.005, drawerFrontZ + drawerFrontThickness / 2 + 0.007)
+  const shoeDepth = Math.max(availableDepth - frontInset * 0.4, thickness * 5)
+  const shoeZ = backZ + shoeDepth / 2
+  const accentPlaneZ = frontLimit - Math.max(frontInset * 0.35, 0.01)
 
   const bottomY = interiorBottom + thickness
   const effectiveHeight = interiorHeight - thickness * 1.5
@@ -1884,58 +1998,140 @@ function ModuleColumn({
   }
 
   return (
-    <group ref={groupRef} position={[xOffset, 0, 0]}>
+    <group position={[xOffset, 0, 0]}>
       {isActive && (
-        <mesh
-          position={[0, bottomY + effectiveHeight / 2, -usableDepth / 2 - 0.005]}
-          receiveShadow
-        >
+        <mesh position={[0, bottomY + effectiveHeight / 2, backZ - 0.006]} receiveShadow>
           <planeGeometry args={[usableWidth * 0.98, effectiveHeight * 1.02]} />
-          <meshStandardMaterial color={accentColor} transparent opacity={0.1} />
+          <meshStandardMaterial color={accentColor} transparent opacity={0.12} />
         </mesh>
       )}
       {module.accent && (
-        <mesh position={[0, bottomY + effectiveHeight / 2, usableDepth / 2 + 0.01]}>
+        <mesh position={[0, bottomY + effectiveHeight / 2, accentPlaneZ]} receiveShadow>
           <planeGeometry args={[usableWidth * 0.92, effectiveHeight * 0.95]} />
           <meshStandardMaterial color={accentColor} roughness={0.35} metalness={0.25} opacity={0.12} transparent />
         </mesh>
       )}
 
-      {shelves.map((shelf, index) => (
+      {/* Structural framing */}
+      <group>
         <mesh
-          key={`shelf-${module.id}-${index}`}
-          position={[0, shelf.y, 0]}
+          position={[-usableWidth / 2 + panelThickness / 2, bottomY + effectiveHeight / 2, 0]}
           castShadow
           receiveShadow
         >
-          <boxGeometry args={[usableWidth, thickness, usableDepth * 0.98]} />
+          <boxGeometry args={[panelThickness, effectiveHeight, usableDepth - faceFrameDepth * 0.4]} />
+          <meshStandardMaterial color={finish} roughness={0.46} metalness={0.08} />
+        </mesh>
+        <mesh
+          position={[usableWidth / 2 - panelThickness / 2, bottomY + effectiveHeight / 2, 0]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[panelThickness, effectiveHeight, usableDepth - faceFrameDepth * 0.4]} />
+          <meshStandardMaterial color={finish} roughness={0.46} metalness={0.08} />
+        </mesh>
+        <mesh
+          position={[0, bottomY + effectiveHeight + panelThickness / 2, usableDepth / 2 - faceFrameDepth / 2]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[usableWidth - panelThickness * 0.6, panelThickness, faceFrameDepth]} />
+          <meshStandardMaterial color={finish} roughness={0.48} metalness={0.08} />
+        </mesh>
+        <mesh
+          position={[0, bottomY - panelThickness / 2, usableDepth / 2 - faceFrameDepth / 2]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[usableWidth - panelThickness * 0.6, panelThickness, faceFrameDepth]} />
+          <meshStandardMaterial color={finish} roughness={0.5} metalness={0.1} />
+        </mesh>
+      </group>
+
+      {shelves.map((shelf, index) => (
+        <mesh
+          key={`shelf-${module.id}-${index}`}
+          position={[0, shelf.y, shelfZ]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[usableWidth - panelThickness * 0.4, thickness, shelfDepth]} />
           <meshStandardMaterial color={finish} roughness={0.48} metalness={0.1} />
+        </mesh>
+      ))}
+      {shelves.map((shelf, index) => (
+        <mesh
+          key={`shelf-lip-${module.id}-${index}`}
+          position={[0, shelf.y + thickness / 2, shelfLipZ]}
+          castShadow
+        >
+          <boxGeometry args={[usableWidth - panelThickness * 0.6, thickness * 0.35, shelfLipDepth]} />
+          <meshStandardMaterial color={finish} roughness={0.42} metalness={0.12} />
         </mesh>
       ))}
 
       {rails.map((rail, index) => (
         <mesh
           key={`rail-${module.id}-${index}`}
-          position={[0, rail.y, usableDepth / 2 - 0.05]}
+          position={[0, rail.y, railFrontOffset]}
+          rotation={[0, 0, Math.PI / 2]}
           castShadow
         >
           <cylinderGeometry args={[0.01, 0.01, usableWidth * 0.94, 24]} />
           <meshStandardMaterial color="#c5c6ce" metalness={0.9} roughness={0.25} />
         </mesh>
       ))}
+      {rails.map((rail, index) => (
+        <group key={`rail-support-${module.id}-${index}`}>
+          <mesh
+            position={[-usableWidth / 2 + panelThickness * 0.35, rail.y, railFrontOffset]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[panelThickness * 0.7, panelThickness * 0.7, faceFrameDepth * 0.8]} />
+            <meshStandardMaterial color={finish} roughness={0.5} metalness={0.12} />
+          </mesh>
+          <mesh
+            position={[usableWidth / 2 - panelThickness * 0.35, rail.y, railFrontOffset]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[panelThickness * 0.7, panelThickness * 0.7, faceFrameDepth * 0.8]} />
+            <meshStandardMaterial color={finish} roughness={0.5} metalness={0.12} />
+          </mesh>
+        </group>
+      ))}
 
       {drawers.map((drawer, index) => (
         <group
           key={`drawer-${module.id}-${index}`}
-          position={[0, drawer.y - effectiveHeight / 2, usableDepth / 2 - thickness * 1.2]}
+          position={[0, drawer.y, 0]}
         >
-          <mesh castShadow receiveShadow position={[0, effectiveHeight / 2, 0]}>
-            <boxGeometry args={[usableWidth * 0.92, drawer.height, thickness * 2]} />
+          <mesh
+            castShadow
+            receiveShadow
+            position={[0, 0, drawerBodyZ]}
+          >
+            <boxGeometry args={[usableWidth - panelThickness * 0.6, drawer.height * 0.92, drawerBodyDepth]} />
             <meshStandardMaterial color={finish} roughness={0.45} metalness={0.06} />
           </mesh>
-          <mesh position={[0, effectiveHeight / 2, thickness * 0.9]} castShadow>
-            <boxGeometry args={[0.08, drawer.height * 0.2, 0.04]} />
-            <meshStandardMaterial color={accentColor} metalness={0.55} roughness={0.18} />
+          <mesh
+            position={[0, 0, drawerFrontZ]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry
+              args={[
+                usableWidth - panelThickness * 0.5,
+                drawer.height,
+                drawerFrontThickness,
+              ]}
+            />
+            <meshStandardMaterial color={finish} roughness={0.35} metalness={0.12} />
+          </mesh>
+          <mesh position={[0, 0, handleZ]} castShadow>
+            <boxGeometry args={[Math.min(usableWidth * 0.4, 0.22), drawer.height * 0.2, 0.02]} />
+            <meshStandardMaterial color="#a7abb2" metalness={0.75} roughness={0.25} />
           </mesh>
         </group>
       ))}
@@ -1943,11 +2139,11 @@ function ModuleColumn({
       {shoeShelves.map((item, index) => (
         <mesh
           key={`shoe-${module.id}-${index}`}
-          position={[0, item.y, usableDepth / 2 - 0.03]}
-          rotation={[0.4, 0, 0]}
+          position={[0, item.y, shoeZ]}
+          rotation={[0.35, 0, 0]}
           castShadow
         >
-          <boxGeometry args={[usableWidth * 0.96, thickness, usableDepth * 0.7]} />
+          <boxGeometry args={[usableWidth - panelThickness * 0.5, thickness, shoeDepth]} />
           <meshStandardMaterial color={finish} roughness={0.48} metalness={0.1} />
         </mesh>
       ))}
@@ -1956,19 +2152,19 @@ function ModuleColumn({
         divider.type === 'horizontal' ? (
           <mesh
             key={`cubby-h-${index}`}
-            position={[0, divider.y, 0]}
+            position={[0, divider.y, shelfZ]}
             receiveShadow
           >
-            <boxGeometry args={[usableWidth * 0.96, thickness * 0.6, usableDepth * 0.96]} />
+            <boxGeometry args={[usableWidth - panelThickness * 0.5, thickness * 0.6, shelfDepth]} />
             <meshStandardMaterial color={interiorFinish} roughness={0.4} metalness={0.1} />
           </mesh>
         ) : (
           <mesh
             key={`cubby-v-${index}`}
-            position={[divider.x - usableWidth / 2, bottomY + effectiveHeight * 0.5, 0]}
+            position={[divider.x - usableWidth / 2, bottomY + effectiveHeight * 0.5, shelfZ]}
             receiveShadow
           >
-            <boxGeometry args={[thickness * 0.6, effectiveHeight * 0.8, usableDepth * 0.96]} />
+            <boxGeometry args={[thickness * 0.6, effectiveHeight * 0.8, shelfDepth]} />
             <meshStandardMaterial color={interiorFinish} roughness={0.4} metalness={0.1} />
           </mesh>
         ),
@@ -1994,7 +2190,6 @@ ModuleColumn.propTypes = {
     accent: PropTypes.bool.isRequired,
   }).isRequired,
   columnIndex: PropTypes.number.isRequired,
-  columnCount: PropTypes.number.isRequired,
   columnWidth: PropTypes.number.isRequired,
   interiorWidth: PropTypes.number.isRequired,
   thickness: PropTypes.number.isRequired,
@@ -2112,33 +2307,40 @@ function Door({ width, height, doorThickness, position, hingeSide, finish, handl
     <group position={position}>
       <mesh castShadow receiveShadow>
         <boxGeometry args={[width, height, doorThickness]} />
-        <meshStandardMaterial
-          color={isSliding ? frameColor : finish}
-          roughness={isSliding ? 0.3 : 0.42}
-          metalness={isSliding ? 0.35 : 0.1}
-        />
+        <meshStandardMaterial color={finish} roughness={0.42} metalness={0.08} />
       </mesh>
       {isSliding && (
         <>
-          <mesh position={[0, 0, doorThickness / 2 - doorThickness * 0.25]} receiveShadow>
-            <boxGeometry args={[width * 0.92, height * 0.88, Math.max(doorThickness * 0.18, 0.005)]} />
-            <meshStandardMaterial color={finish} roughness={0.4} metalness={0.12} />
+          <mesh position={[0, 0, doorThickness / 2 - doorThickness * 0.35]} receiveShadow>
+            <boxGeometry args={[width * 0.96, height * 0.92, Math.max(doorThickness * 0.1, 0.004)]} />
+            <meshStandardMaterial color="#ffffff" transparent opacity={0.06} roughness={0.1} metalness={0.1} />
           </mesh>
-          <mesh position={[0, height / 2 - 0.04, doorThickness / 2 + 0.004]}>
-            <boxGeometry args={[width * 0.94, 0.02, doorThickness * 0.6]} />
-            <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.3} />
+          <mesh position={[0, height / 2 - 0.02, doorThickness / 2 + 0.002]} receiveShadow>
+            <boxGeometry args={[width * 0.97, 0.016, doorThickness * 0.6]} />
+            <meshStandardMaterial color={frameColor} metalness={0.45} roughness={0.24} />
           </mesh>
-          <mesh position={[0, -height / 2 + 0.04, doorThickness / 2 + 0.004]}>
-            <boxGeometry args={[width * 0.94, 0.02, doorThickness * 0.6]} />
-            <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.3} />
+          <mesh position={[0, -height / 2 + 0.02, doorThickness / 2 + 0.002]} receiveShadow>
+            <boxGeometry args={[width * 0.97, 0.016, doorThickness * 0.6]} />
+            <meshStandardMaterial color={frameColor} metalness={0.45} roughness={0.24} />
           </mesh>
-          <mesh position={[width / 2 - 0.02, 0, doorThickness / 2 + 0.004]}>
-            <boxGeometry args={[0.02, height * 0.94, doorThickness * 0.6]} />
-            <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.3} />
+          <mesh position={[width / 2 - 0.015, 0, doorThickness / 2 + 0.002]} receiveShadow>
+            <boxGeometry args={[0.018, height * 0.94, doorThickness * 0.6]} />
+            <meshStandardMaterial color={frameColor} metalness={0.45} roughness={0.24} />
           </mesh>
-          <mesh position={[-width / 2 + 0.02, 0, doorThickness / 2 + 0.004]}>
-            <boxGeometry args={[0.02, height * 0.94, doorThickness * 0.6]} />
-            <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.3} />
+          <mesh position={[-width / 2 + 0.015, 0, doorThickness / 2 + 0.002]} receiveShadow>
+            <boxGeometry args={[0.018, height * 0.94, doorThickness * 0.6]} />
+            <meshStandardMaterial color={frameColor} metalness={0.45} roughness={0.24} />
+          </mesh>
+          <mesh position={[0, 0, doorThickness / 2 + 0.012]}>
+            <planeGeometry args={[width * 0.96, height * 0.9]} />
+            <meshStandardMaterial
+              color="#ffffff"
+              transparent
+              opacity={0.05}
+              roughness={0.15}
+              metalness={0.2}
+              side={THREE.DoubleSide}
+            />
           </mesh>
         </>
       )}
@@ -2195,20 +2397,21 @@ function createFloorTexture() {
   canvas.width = size
   canvas.height = size
   const ctx = canvas.getContext('2d')
-  ctx.fillStyle = '#e7d1a7'
+  ctx.fillStyle = '#f2f0eb'
   ctx.fillRect(0, 0, size, size)
 
-  const colors = ['#eedaaf', '#f2dfb9']
-  const tile = size / 6
-  for (let y = -2; y < 8; y += 1) {
-    for (let x = -2; x < 8; x += 1) {
-      ctx.save()
-      ctx.translate(x * tile + (y % 2 ? tile / 2 : 0), y * (tile / 2))
-      ctx.rotate((45 * Math.PI) / 180)
-      ctx.fillStyle = colors[(x + y) % colors.length]
-      ctx.fillRect(0, 0, tile * 1.2, tile / 1.6)
-      ctx.restore()
+  const plankWidth = size / 14
+  const plankLength = size / 2
+  const colors = ['#dbd4c7', '#d1c8b8', '#e2dbce']
+  for (let y = -plankLength; y < size + plankLength; y += plankWidth) {
+    ctx.save()
+    ctx.translate(0, y + plankWidth / 2)
+    ctx.rotate((5 * Math.PI) / 180)
+    for (let x = -plankLength; x < size + plankLength; x += plankLength) {
+      ctx.fillStyle = colors[Math.floor(Math.random() * colors.length)]
+      ctx.fillRect(x, -plankWidth / 2, plankLength + 12, plankWidth)
     }
+    ctx.restore()
   }
 
   const texture = new THREE.CanvasTexture(canvas)
@@ -2221,23 +2424,283 @@ function createFloorTexture() {
 
 function Showroom() {
   const floorTexture = useMemo(() => createFloorTexture(), [])
+  const wallHeight = 2.8
+  const wallColorPrimary = '#f0f3f8'
+  const wallColorAccent = '#dde2eb'
 
   return (
     <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
-        <planeGeometry args={[12, 12]} />
-        <meshStandardMaterial map={floorTexture} roughness={0.8} metalness={0.1} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.0005, 0]} receiveShadow>
+        <planeGeometry args={[ROOM_WIDTH_METERS, ROOM_DEPTH_METERS]} />
+        <meshStandardMaterial map={floorTexture} roughness={0.7} metalness={0.12} />
       </mesh>
-      <mesh position={[0, 2.2, -3]} receiveShadow>
-        <planeGeometry args={[12, 5]} />
-        <meshStandardMaterial color="#d9dde4" roughness={0.9} metalness={0.05} />
+      <mesh position={[0, wallHeight / 2, ROOM_BACK_Z]} receiveShadow>
+        <planeGeometry args={[ROOM_WIDTH_METERS, wallHeight]} />
+        <meshStandardMaterial color={wallColorPrimary} roughness={0.94} metalness={0.03} />
       </mesh>
-      <mesh position={[0, 2.6, -6]} receiveShadow>
-        <planeGeometry args={[12, 6]} />
-        <meshStandardMaterial color="#bfc4cf" roughness={0.92} metalness={0.04} />
+      <mesh
+        position={[-ROOM_WIDTH_METERS / 2, wallHeight / 2, 0]}
+        rotation={[0, Math.PI / 2, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[ROOM_DEPTH_METERS, wallHeight]} />
+        <meshStandardMaterial color={wallColorAccent} roughness={0.95} metalness={0.02} />
       </mesh>
+      <mesh
+        position={[ROOM_WIDTH_METERS / 2, wallHeight / 2, 0]}
+        rotation={[0, -Math.PI / 2, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[ROOM_DEPTH_METERS, wallHeight]} />
+        <meshStandardMaterial color={wallColorAccent} roughness={0.95} metalness={0.02} />
+      </mesh>
+      <Fountain position={[-ROOM_WIDTH_METERS / 4, 0, ROOM_BACK_Z + ROOM_DEPTH_METERS * 0.55]} />
     </group>
   )
+}
+
+function Fountain({ position }) {
+  const dropletRef = useRef(null)
+  const rippleRef = useRef(null)
+  const upperRippleRef = useRef(null)
+  const streamGroup = useRef([])
+  const sprayRef = useRef(null)
+  const dropletData = useMemo(() => {
+    const count = 480
+    const positions = new Float32Array(count * 3)
+    const velocities = new Float32Array(count * 3)
+    const startY = 0.78
+
+    for (let i = 0; i < count; i += 1) {
+      const angle = Math.random() * Math.PI * 2
+      const radius = 0.032 + Math.random() * 0.036
+      const index = i * 3
+      positions[index] = Math.cos(angle) * radius
+      positions[index + 1] = startY + Math.random() * 0.02
+      positions[index + 2] = Math.sin(angle) * radius
+
+      const speed = 0.36 + Math.random() * 0.18
+      velocities[index] = Math.cos(angle) * speed
+      velocities[index + 1] = -0.82 - Math.random() * 0.28
+      velocities[index + 2] = Math.sin(angle) * speed
+    }
+    return { positions, velocities, startY }
+  }, [])
+
+  const streamGeometry = useMemo(() => {
+    const curve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0.08, -0.12, 0),
+      new THREE.Vector3(0.16, -0.34, 0),
+    )
+    return new THREE.TubeGeometry(curve, 18, 0.011, 14, false)
+  }, [])
+
+  const bowlStreamGeometry = useMemo(() => {
+    const curve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0.07, -0.16, 0),
+      new THREE.Vector3(0.14, -0.26, 0),
+    )
+    return new THREE.TubeGeometry(curve, 20, 0.01, 12, false)
+  }, [])
+
+  const dropletGeometry = useMemo(() => {
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(dropletData.positions, 3))
+    return geometry
+  }, [dropletData.positions])
+
+  const dropletMaterial = useMemo(() => {
+    const textureCanvas = document.createElement('canvas')
+    textureCanvas.width = 32
+    textureCanvas.height = 32
+    const ctx = textureCanvas.getContext('2d')
+    const gradient = ctx.createRadialGradient(16, 16, 4, 16, 16, 16)
+    gradient.addColorStop(0, 'rgba(255,255,255,0.9)')
+    gradient.addColorStop(1, 'rgba(150,200,255,0)')
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, 32, 32)
+    const texture = new THREE.CanvasTexture(textureCanvas)
+    texture.anisotropy = 8
+    return new THREE.PointsMaterial({
+      size: 0.024,
+      map: texture,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  }, [])
+
+  useFrame((_, delta) => {
+    const { positions, velocities, startY } = dropletData
+    if (dropletRef.current) {
+      for (let i = 0; i < positions.length; i += 3) {
+        positions[i] += velocities[i] * delta
+        positions[i + 1] += velocities[i + 1] * delta
+        positions[i + 2] += velocities[i + 2] * delta
+
+        if (positions[i + 1] < 0.28) {
+          const angle = Math.random() * Math.PI * 2
+          const radius = 0.03 + Math.random() * 0.04
+          positions[i] = Math.cos(angle) * radius
+          positions[i + 1] = startY + Math.random() * 0.02
+          positions[i + 2] = Math.sin(angle) * radius
+          const speed = 0.36 + Math.random() * 0.2
+          velocities[i] = Math.cos(angle) * speed
+          velocities[i + 1] = -0.82 - Math.random() * 0.3
+          velocities[i + 2] = Math.sin(angle) * speed
+        }
+      }
+      dropletRef.current.geometry.attributes.position.needsUpdate = true
+    }
+
+    const ripplePulse = 1 + Math.sin(performance.now() * 0.0028) * 0.08
+    if (rippleRef.current) {
+      rippleRef.current.scale.set(ripplePulse, 1, ripplePulse)
+      rippleRef.current.material.opacity = 0.25 + (ripplePulse - 1) * 1.8
+    }
+    if (upperRippleRef.current) {
+      const t = performance.now() * 0.0021
+      const s = 1 + Math.sin(t) * 0.05
+      upperRippleRef.current.scale.set(s, 1, s)
+      upperRippleRef.current.material.opacity = 0.28 + Math.sin(t) * 0.07
+    }
+
+    streamGroup.current.forEach((mesh, index) => {
+      if (!mesh) return
+      const wave = Math.sin(performance.now() * 0.003 + index) * 0.05
+      mesh.scale.z = 1 + wave
+    })
+
+    if (sprayRef.current) {
+      const t = performance.now() * 0.003
+      sprayRef.current.material.opacity = 0.38 + Math.sin(t) * 0.1
+      sprayRef.current.scale.set(0.9, 0.9 + Math.sin(t * 1.4) * 0.06, 0.9)
+    }
+  })
+
+  return (
+    <group position={position} scale={[0.8, 0.8, 0.8]} castShadow receiveShadow>
+      <mesh position={[0, 0.06, 0]} receiveShadow>
+        <cylinderGeometry args={[0.58, 0.62, 0.12, 48]} />
+        <meshStandardMaterial color="#8e7a66" roughness={0.55} metalness={0.16} />
+      </mesh>
+      <mesh position={[0, 0.19, 0]} receiveShadow>
+        <cylinderGeometry args={[0.52, 0.54, 0.1, 48]} />
+        <meshStandardMaterial color="#9b8670" roughness={0.5} metalness={0.18} />
+      </mesh>
+      <mesh position={[0, 0.28, 0]} receiveShadow>
+        <cylinderGeometry args={[0.38, 0.4, 0.16, 48]} />
+        <meshStandardMaterial color="#a89278" roughness={0.58} metalness={0.18} />
+      </mesh>
+      <mesh position={[0, 0.38, 0]} receiveShadow>
+        <cylinderGeometry args={[0.3, 0.34, 0.12, 48]} />
+        <meshStandardMaterial color="#b1987b" roughness={0.6} metalness={0.18} />
+      </mesh>
+
+      <mesh position={[0, 0.44, 0]} receiveShadow>
+        <cylinderGeometry args={[0.24, 0.28, 0.16, 48]} />
+        <meshStandardMaterial color="#bfa185" roughness={0.62} metalness={0.16} />
+      </mesh>
+
+      <mesh position={[0, 0.52, 0]} receiveShadow>
+        <cylinderGeometry args={[0.12, 0.22, 0.12, 48]} />
+        <meshStandardMaterial color="#c5a888" roughness={0.64} metalness={0.14} />
+      </mesh>
+
+      <mesh position={[0, 0.62, 0]} receiveShadow>
+        <cylinderGeometry args={[0.08, 0.14, 0.14, 48]} />
+        <meshStandardMaterial color="#cfb18f" roughness={0.65} metalness={0.12} />
+      </mesh>
+
+      <mesh position={[0, 0.74, 0]} receiveShadow>
+        <sphereGeometry args={[0.08, 24, 16]} />
+        <meshStandardMaterial color="#d9b996" roughness={0.62} metalness={0.14} />
+      </mesh>
+
+      <mesh position={[0, 0.28, 0]}>
+        <cylinderGeometry args={[0.36, 0.37, 0.05, 48, 1, true]} />
+        <meshStandardMaterial color="#5fb3ff" transparent opacity={0.22} roughness={0.1} metalness={0.2} side={THREE.DoubleSide} />
+      </mesh>
+
+      <mesh position={[0, 0.52, 0]}>
+        <cylinderGeometry args={[0.18, 0.2, 0.04, 48, 1, true]} />
+        <meshStandardMaterial color="#6ac1ff" transparent opacity={0.25} roughness={0.1} metalness={0.2} side={THREE.DoubleSide} />
+      </mesh>
+
+      <mesh position={[0, 0.45, 0]}>
+        <cylinderGeometry args={[0.34, 0.36, 0.18, 64, 1, true]} />
+        <meshStandardMaterial color="#7fc9ff" transparent opacity={0.18} roughness={0.08} metalness={0.18} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh position={[0, 0.66, 0]}>
+        <cylinderGeometry args={[0.16, 0.18, 0.1, 48, 1, true]} />
+        <meshStandardMaterial color="#8dd0ff" transparent opacity={0.18} roughness={0.08} metalness={0.18} side={THREE.DoubleSide} />
+      </mesh>
+
+      <mesh ref={rippleRef} position={[0, 0.25, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.14, 0.32, 64]} />
+        <meshStandardMaterial color="#8ccfff" transparent opacity={0.25} roughness={0.12} metalness={0.08} />
+      </mesh>
+
+      <mesh ref={upperRippleRef} position={[0, 0.52, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.07, 0.18, 48]} />
+        <meshStandardMaterial color="#9dd4ff" transparent opacity={0.28} roughness={0.12} metalness={0.08} />
+      </mesh>
+
+      <group position={[0, 0.76, 0]}>
+        {Array.from({ length: 8 }).map((_, index) => {
+          const angle = (index / 8) * Math.PI * 2
+          return (
+            <mesh
+              // eslint-disable-next-line react/no-array-index-key
+              key={`top-stream-${index}`}
+              ref={(el) => {
+                streamGroup.current[index] = el
+              }}
+              geometry={streamGeometry}
+              rotation={[0, angle, 0]}
+              position={[Math.cos(angle) * 0.02, 0, Math.sin(angle) * 0.02]}
+            >
+              <meshStandardMaterial color="#b7e4ff" transparent opacity={0.75} roughness={0.05} metalness={0.25} />
+            </mesh>
+          )
+        })}
+      </group>
+
+      <group position={[0, 0.52, 0]}>
+        {Array.from({ length: 12 }).map((_, index) => {
+          const angle = (index / 12) * Math.PI * 2
+          return (
+            <mesh
+              // eslint-disable-next-line react/no-array-index-key
+              key={`bowl-stream-${index}`}
+              ref={(el) => {
+                streamGroup.current[8 + index] = el
+              }}
+              geometry={bowlStreamGeometry}
+              rotation={[0, angle, 0]}
+              position={[Math.cos(angle) * 0.16, -0.02, Math.sin(angle) * 0.16]}
+            >
+              <meshStandardMaterial color="#a9dbff" transparent opacity={0.72} roughness={0.06} metalness={0.22} />
+            </mesh>
+          )
+        })}
+      </group>
+
+      <mesh ref={sprayRef} position={[0, 0.84, 0]}>
+        <sphereGeometry args={[0.06, 16, 12]} />
+        <meshStandardMaterial color="#e3f6ff" transparent opacity={0.45} emissive="#bfe6ff" emissiveIntensity={0.6} roughness={0.05} metalness={0.22} />
+      </mesh>
+
+      <points ref={dropletRef} geometry={dropletGeometry} material={dropletMaterial} />
+    </group>
+  )
+}
+
+Fountain.propTypes = {
+  position: PropTypes.arrayOf(PropTypes.number).isRequired,
 }
 
 function CameraRig({ controlsRef, isFrontView, resetKey }) {
