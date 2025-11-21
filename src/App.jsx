@@ -4,6 +4,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { ContactShadows, Environment, Html, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import './App.css'
+import AdminPanel from './AdminPanel'
 
 const steps = [
   { id: 'cabinet', label: 'Skříň' },
@@ -78,7 +79,7 @@ const materialSecondaryFilters = [
   { id: 'kov', label: 'Kov' },
 ]
 
-const swatchLibrary = [
+const defaultSwatchLibrary = [
   { id: 'white-satin', label: 'Bílá satén', color: '#f4f4f4', categories: ['lamino', 'vysoky-lesk', 'barva', 'vse'] },
   { id: 'arctic-grey', label: 'Arctic šedá', color: '#c5c8ce', categories: ['lamino', 'barva', 'kov', 'vse'] },
   { id: 'ivory-matte', label: 'Slonová kost', color: '#f1e7d8', categories: ['lamino', 'barva', 'vysoky-lesk', 'vse'] },
@@ -93,10 +94,26 @@ const swatchLibrary = [
   { id: 'ash-bright', label: 'Jasan světlý', color: '#ddd0ba', categories: ['dyha', 'lamino', 'drevo', 'vse'] },
 ]
 
-const swatchLookup = swatchLibrary.reduce((acc, swatch) => {
-  acc[swatch.id] = swatch
-  return acc
-}, {})
+const STORAGE_KEY = '3d-skrin-custom-decors'
+
+const loadCustomSwatches = () => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    const parsed = stored ? JSON.parse(stored) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch (error) {
+    console.error('Failed to load custom swatches:', error)
+    return []
+  }
+}
+
+const saveCustomSwatches = (swatches) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(swatches))
+  } catch (error) {
+    console.error('Failed to save custom swatches:', error)
+  }
+}
 
 const moduleLibrary = [
   {
@@ -227,20 +244,13 @@ const positionLabelMap = positionOptions.reduce((acc, option) => {
   return acc
 }, {})
 
+
 const formatCurrency = (value) =>
   new Intl.NumberFormat('cs-CZ', {
     style: 'currency',
     currency: 'CZK',
     maximumFractionDigits: 0,
   }).format(value)
-
-const filterSwatches = (category) => {
-  if (category === 'vse') {
-    return swatchLibrary
-  }
-
-  return swatchLibrary.filter((swatch) => swatch.categories.includes(category))
-}
 
 function useHistoryState(initialState) {
   const [history, setHistory] = useState({
@@ -330,6 +340,8 @@ function App() {
   const [doorsVisible, setDoorsVisible] = useState(true)
   const [cameraResetKey, setCameraResetKey] = useState(0)
   const [toast, setToast] = useState('')
+  const [isAdminMode, setIsAdminMode] = useState(false)
+  const [customSwatches, setCustomSwatches] = useState(() => loadCustomSwatches())
   const [quoteData, setQuoteData] = useState({
     name: '',
     email: '',
@@ -344,6 +356,37 @@ function App() {
   const controlsRef = useRef(null)
   const previousDoorStyle = useRef(config.doorStyle)
   const interiorDoorVisibility = useRef(null)
+
+  const swatchLibrary = useMemo(() => {
+    const combined = [...defaultSwatchLibrary, ...customSwatches]
+    console.log('🔍 Swatch library:', {
+      defaultCount: defaultSwatchLibrary.length,
+      customCount: customSwatches.length,
+      customIds: customSwatches.map(s => s.id),
+      totalCount: combined.length
+    })
+
+    // Log details of each custom swatch
+    customSwatches.forEach(swatch => {
+      console.log(`📦 Custom swatch "${swatch.id}":`, {
+        label: swatch.label,
+        color: swatch.color,
+        hasImageUrl: !!swatch.imageUrl,
+        imageUrlLength: swatch.imageUrl?.length || 0,
+        categories: swatch.categories
+      })
+    })
+
+    return combined
+  }, [customSwatches])
+
+  const swatchLookup = useMemo(() => {
+    return swatchLibrary.reduce((acc, swatch) => {
+      if (!swatch || !swatch.id) return acc
+      acc[swatch.id] = swatch
+      return acc
+    }, {})
+  }, [swatchLibrary])
 
   useEffect(() => {
     if (activeInteriorColumn > config.columnCount - 1) {
@@ -384,9 +427,36 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [toast])
 
-  const cabinetColor = swatchLookup[config.cabinetMaterial]?.color ?? '#d0cec6'
-  const interiorColor = swatchLookup[config.interiorMaterial]?.color ?? '#f1ede4'
-  const doorColor = swatchLookup[config.doorMaterial]?.color ?? cabinetColor
+  const handleCustomSwatchesChange = useCallback((newSwatches) => {
+    setCustomSwatches(newSwatches)
+    saveCustomSwatches(newSwatches)
+  }, [])
+
+  const filterSwatches = useCallback((category) => {
+    if (category === 'vse') {
+      return swatchLibrary
+    }
+    return swatchLibrary.filter((swatch) => swatch.categories.includes(category))
+  }, [swatchLibrary])
+
+  const cabinetSwatch = useMemo(() => swatchLookup[config.cabinetMaterial] || { color: '#d0cec6' }, [swatchLookup, config.cabinetMaterial])
+  const interiorSwatch = useMemo(() => swatchLookup[config.interiorMaterial] || { color: '#f1ede4' }, [swatchLookup, config.interiorMaterial])
+  const doorSwatch = useMemo(() => swatchLookup[config.doorMaterial] || cabinetSwatch, [swatchLookup, config.doorMaterial, cabinetSwatch])
+
+  // DEBUG: Check what's in the selected swatch
+  console.log('🔍 Selected cabinet swatch:', {
+    id: config.cabinetMaterial,
+    color: cabinetSwatch?.color,
+    hasImageUrl: !!cabinetSwatch?.imageUrl,
+    imageUrlLength: cabinetSwatch?.imageUrl?.length || 0,
+    imageUrlPreview: cabinetSwatch?.imageUrl?.substring(0, 100)
+  })
+
+
+
+  const cabinetColor = cabinetSwatch.color
+  const interiorColor = interiorSwatch.color
+  const doorColor = doorSwatch.color
 
   const updateConfig = useCallback(
     (updater) => {
@@ -592,6 +662,16 @@ function App() {
 
   const doorVariant = config.doorStyle === 'hinged' ? 'hinged' : config.doorStyle === 'sliding' ? 'sliding' : 'none'
 
+  if (isAdminMode) {
+    return (
+      <AdminPanel
+        onBack={() => setIsAdminMode(false)}
+        customSwatches={customSwatches}
+        onSwatchesChange={handleCustomSwatchesChange}
+      />
+    )
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -609,6 +689,9 @@ function App() {
           </button>
         </div>
         <div className="app-header__right">
+          <button type="button" className="chip chip--outline" onClick={() => setIsAdminMode(true)}>
+            ⚙️ Admin
+          </button>
           <button type="button" className="chip chip--primary">
             <span className="chip__icon">+</span>
             Vytvořen nový návrh
@@ -732,8 +815,11 @@ function App() {
                       columnCount={config.columnCount}
                       modules={config.modules}
                       cabinetFinish={cabinetColor}
+                      cabinetTexture={cabinetSwatch.imageUrl}
                       interiorFinish={interiorColor}
+                      interiorTexture={interiorSwatch.imageUrl}
                       doorFinish={doorColor}
+                      doorTexture={doorSwatch.imageUrl}
                       doorStyle={doorVariant}
                       doorsVisible={doorsVisible}
                       activeColumn={activeInteriorColumn}
@@ -1699,8 +1785,11 @@ function Cabinet({
   columnCount,
   modules,
   cabinetFinish,
+  cabinetTexture,
   interiorFinish,
+  interiorTexture,
   doorFinish,
+  doorTexture,
   doorStyle,
   doorsVisible,
   activeColumn,
@@ -1728,6 +1817,83 @@ function Cabinet({
 
   const columnModules = modules.slice(0, columnCount).map((moduleId) => moduleLookup[moduleId] ?? moduleLibrary[0])
 
+
+
+  // Load textures from Base64 imageUrl if available
+  const [cabinetTextureMap, setCabinetTextureMap] = useState(null)
+  const [interiorTextureMap, setInteriorTextureMap] = useState(null)
+  const [doorTextureMap, setDoorTextureMap] = useState(null)
+
+  useEffect(() => {
+    console.log('🔍 Cabinet texture loading - texture URL:', cabinetTexture ? cabinetTexture.substring(0, 100) + '...' : 'EMPTY')
+
+    if (!cabinetTexture) {
+      console.log('❌ No texture URL - setting map to null')
+      setCabinetTextureMap(null)
+      return
+    }
+
+    console.log('✅ Starting to load texture...')
+    const img = new Image()
+    img.onload = () => {
+      console.log('✅ Texture loaded successfully! Size:', img.width, 'x', img.height)
+      const texture = new THREE.Texture(img)
+      texture.needsUpdate = true
+      texture.wrapS = THREE.RepeatWrapping
+      texture.wrapT = THREE.RepeatWrapping
+      texture.repeat.set(2, 2)
+      setCabinetTextureMap(texture)
+      console.log('✅ Texture map set to state')
+    }
+    img.onerror = (err) => {
+      console.error('❌ Failed to load cabinet texture:', err)
+      setCabinetTextureMap(null)
+    }
+    img.src = cabinetTexture
+  }, [cabinetTexture])
+
+  useEffect(() => {
+    if (!interiorTexture) {
+      setInteriorTextureMap(null)
+      return
+    }
+    const img = new Image()
+    img.onload = () => {
+      const texture = new THREE.Texture(img)
+      texture.needsUpdate = true
+      texture.wrapS = THREE.RepeatWrapping
+      texture.wrapT = THREE.RepeatWrapping
+      texture.repeat.set(2, 2)
+      setInteriorTextureMap(texture)
+    }
+    img.onerror = (err) => {
+      console.error('Failed to load interior texture:', err)
+      setInteriorTextureMap(null)
+    }
+    img.src = interiorTexture
+  }, [interiorTexture])
+
+  useEffect(() => {
+    if (!doorTexture) {
+      setDoorTextureMap(null)
+      return
+    }
+    const img = new Image()
+    img.onload = () => {
+      const texture = new THREE.Texture(img)
+      texture.needsUpdate = true
+      texture.wrapS = THREE.RepeatWrapping
+      texture.wrapT = THREE.RepeatWrapping
+      texture.repeat.set(1, 1)
+      setDoorTextureMap(texture)
+    }
+    img.onerror = (err) => {
+      console.error('Failed to load door texture:', err)
+      setDoorTextureMap(null)
+    }
+    img.src = doorTexture
+  }, [doorTexture])
+
   return (
     <group position={[0, halfHeight, 0]}>
       {/* Side carcass panels */}
@@ -1737,7 +1903,7 @@ function Cabinet({
         receiveShadow
       >
         <boxGeometry args={[thickness, heightMeters, depthMeters]} />
-        <meshStandardMaterial color={cabinetFinish} roughness={0.52} metalness={0.08} />
+        <meshStandardMaterial color={cabinetTextureMap ? '#ffffff' : cabinetFinish} map={cabinetTextureMap} roughness={0.52} metalness={0.08} />
       </mesh>
       <mesh
         position={[widthMeters / 2 - thickness / 2, 0, 0]}
@@ -1745,13 +1911,13 @@ function Cabinet({
         receiveShadow
       >
         <boxGeometry args={[thickness, heightMeters, depthMeters]} />
-        <meshStandardMaterial color={cabinetFinish} roughness={0.52} metalness={0.08} />
+        <meshStandardMaterial color={cabinetTextureMap ? '#ffffff' : cabinetFinish} map={cabinetTextureMap} roughness={0.52} metalness={0.08} />
       </mesh>
 
       {includeBackPanel && (
         <mesh position={[0, 0, -halfDepth + thickness / 2]} receiveShadow>
           <boxGeometry args={[interiorWidth, interiorHeight, thickness]} />
-          <meshStandardMaterial color={interiorFinish} roughness={0.32} metalness={0.08} />
+          <meshStandardMaterial color={interiorTextureMap ? '#ffffff' : interiorFinish} map={interiorTextureMap} roughness={0.32} metalness={0.08} />
         </mesh>
       )}
 
@@ -1759,11 +1925,11 @@ function Cabinet({
         <>
           <mesh position={[0, halfHeight - thickness / 2, 0]} castShadow receiveShadow>
             <boxGeometry args={[interiorWidth, thickness, depthMeters]} />
-            <meshStandardMaterial color={cabinetFinish} roughness={0.48} metalness={0.08} />
+            <meshStandardMaterial color={cabinetTextureMap ? '#ffffff' : cabinetFinish} map={cabinetTextureMap} roughness={0.48} metalness={0.08} />
           </mesh>
           <mesh position={[0, -halfHeight + thickness / 2, 0]} castShadow receiveShadow>
             <boxGeometry args={[interiorWidth, thickness, depthMeters]} />
-            <meshStandardMaterial color={cabinetFinish} roughness={0.6} metalness={0.08} />
+            <meshStandardMaterial color={cabinetTextureMap ? '#ffffff' : cabinetFinish} map={cabinetTextureMap} roughness={0.6} metalness={0.08} />
           </mesh>
         </>
       )}
@@ -1839,6 +2005,7 @@ function Cabinet({
           depth={depthMeters}
           doorStyle={doorStyle}
           finish={doorFinish}
+          textureMap={doorTextureMap}
         />
       )}
     </group>
@@ -1978,8 +2145,8 @@ function ModuleColumn({
 
   const shoeShelves = module.shoeShelves
     ? Array.from({ length: module.shoeShelves }).map((_, index) => ({
-        y: bottomY + 0.12 + index * (effectiveHeight * 0.12),
-      }))
+      y: bottomY + 0.12 + index * (effectiveHeight * 0.12),
+    }))
     : []
 
   const cubbies = []
@@ -2201,7 +2368,7 @@ ModuleColumn.propTypes = {
   isActive: PropTypes.bool.isRequired,
 }
 
-function CabinetDoors({ width, height, depth, doorStyle, finish }) {
+function CabinetDoors({ width, height, depth, doorStyle, finish, textureMap }) {
   const doorGap = 0.01
   const doorThickness = 0.02
   const doorZ = depth / 2 + doorThickness / 2 - 0.005
@@ -2237,6 +2404,7 @@ function CabinetDoors({ width, height, depth, doorStyle, finish }) {
           position={[-overlap / 2, 0, doorZ + doorThickness * 0.35]}
           hingeSide="left"
           finish={finish}
+          textureMap={textureMap}
           handleOffset={handleOffset}
           handleLength={handleLength}
           variant="sliding-left"
@@ -2248,6 +2416,7 @@ function CabinetDoors({ width, height, depth, doorStyle, finish }) {
           position={[overlap / 2, 0, doorZ - doorThickness * 0.35]}
           hingeSide="right"
           finish={finish}
+          textureMap={textureMap}
           handleOffset={handleOffset}
           handleLength={handleLength}
           variant="sliding-right"
@@ -2260,26 +2429,28 @@ function CabinetDoors({ width, height, depth, doorStyle, finish }) {
   return (
     <group>
       <Door
-        width={singleWidth}
+        width={width / 2}
         height={height}
         doorThickness={doorThickness}
-        position={[-singleWidth / 2 - doorGap / 2, 0, doorZ]}
+        position={[-width / 4, 0, Math.max(depth / 2 + doorThickness / 1.15, depth / 2 + 0.014)]}
         hingeSide="left"
         finish={finish}
+        textureMap={textureMap}
         handleOffset={handleOffset}
         handleLength={handleLength}
-        variant="hinged"
+        variant="hinged-left"
       />
       <Door
-        width={singleWidth}
+        width={width / 2}
         height={height}
         doorThickness={doorThickness}
-        position={[singleWidth / 2 + doorGap / 2, 0, doorZ]}
+        position={[width / 4, 0, Math.max(depth / 2 + doorThickness / 1.15, depth / 2 + 0.014)]}
         hingeSide="right"
         finish={finish}
+        textureMap={textureMap}
         handleOffset={handleOffset}
         handleLength={handleLength}
-        variant="hinged"
+        variant="hinged-right"
       />
     </group>
   )
@@ -2293,7 +2464,7 @@ CabinetDoors.propTypes = {
   finish: PropTypes.string.isRequired,
 }
 
-function Door({ width, height, doorThickness, position, hingeSide, finish, handleOffset, handleLength, variant }) {
+function Door({ width, height, doorThickness, position, hingeSide, finish, textureMap, handleOffset, handleLength, variant }) {
   const isSliding = variant?.startsWith('sliding')
   const frameColor = '#c8cbd4'
   const handleX = isSliding
@@ -2301,13 +2472,13 @@ function Door({ width, height, doorThickness, position, hingeSide, finish, handl
       ? width / 2 - 0.12
       : -width / 2 + 0.12
     : hingeSide === 'left'
-    ? width / 2 - 0.08
-    : -width / 2 + 0.08
+      ? width / 2 - 0.08
+      : -width / 2 + 0.08
   return (
     <group position={position}>
       <mesh castShadow receiveShadow>
         <boxGeometry args={[width, height, doorThickness]} />
-        <meshStandardMaterial color={finish} roughness={0.42} metalness={0.08} />
+        <meshStandardMaterial color={textureMap ? '#ffffff' : finish} map={textureMap} roughness={0.42} metalness={0.08} />
       </mesh>
       {isSliding && (
         <>
